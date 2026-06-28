@@ -5,7 +5,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/yourusername/bookstore-api/config"
+	"github.com/yuriowindiatmoko-plai-robotic/bookstore-api/config"
 )
 
 func main() {

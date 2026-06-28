@@ -2,12 +2,12 @@ package main
 
 import (
 	"fmt"
-	"net/http"
 	"os"
 
 	"github.com/gin-gonic/gin"
-	"github.com/yourusername/bookstore-api/config"
-	"github.com/yourusername/bookstore-api/models"
+	"github.com/yuriowindiatmoko-plai-robotic/bookstore-api/config"
+	"github.com/yuriowindiatmoko-plai-robotic/bookstore-api/models"
+	"github.com/yuriowindiatmoko-plai-robotic/bookstore-api/routes"
 )
 
 func main() {
@@ -24,9 +24,7 @@ func main() {
 
 	r := gin.Default()
 
-	r.GET("/health", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"data": gin.H{"status": "ok"}})
-	})
+	routes.SetupRoutes(r, db)
 
 	port := os.Getenv("PORT")
 	if port == "" {

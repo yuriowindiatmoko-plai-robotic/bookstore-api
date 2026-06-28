@@ -13,7 +13,7 @@ _REST API untuk toko buku, dibangun dari nol memakai Go + Gin + GORM di atas Pos
 | Language | Go | 1.25.0 |
 | HTTP framework | Gin | 1.12.0 |
 | ORM | GORM + `gorm.io/driver/postgres` (pgx) | 1.31.2 / 1.6.0 |
-| Auth | `golang-jwt/v5` (planned), bcrypt (`x/crypto`) | v5.3.1 / v0.48.0 |
+| Auth | `golang-jwt/v5` (JWT HS256), bcrypt (`x/crypto`) | v5.3.1 / v0.48.0 |
 | Env loader | `joho/godotenv` | 1.5.1 |
 | Database | PostgreSQL | 16 |
 | Container runtime | Podman + `docker-compose` provider | 6.0.0 / 5.2.0 |
@@ -25,12 +25,19 @@ _REST API untuk toko buku, dibangun dari nol memakai Go + Gin + GORM di atas Pos
 
 ```
 bookstore-api/
-├── main.go                 # Entry point: connect, migrate, Gin setup, /health, serve
+├── main.go                 # Entry point: connect, migrate, gin.Default, SetupRoutes, serve
 ├── config/
 │   └── database.go         # LoadEnv() + Connect() — retry, pool tuning, Gin-routed logs
 ├── models/
 │   ├── book.go             # Book GORM model
 │   └── user.go             # User GORM model + bcrypt HashPassword/CheckPassword
+├── handlers/
+│   ├── book.go             # BookHandler — CRUD (list/get/create/update/delete)
+│   └── auth.go             # AuthHandler — Register, Login, JWT issuance
+├── middleware/
+│   └── auth.go             # AuthMiddleware — Bearer JWT validation, sets user_id/email
+├── routes/
+│   └── routes.go           # SetupRoutes — /health, /api/v1 group (public + protected)
 ├── cmd/
 │   └── dbcheck/
 │       └── main.go         # Standalone DB connectivity checker
@@ -153,7 +160,7 @@ Defined in `.env` (gitignored). _Didefinisikan di `.env` (diabaikan oleh git)._
 | `DB_CONN_MAX_LIFETIME` | `30m` | Pool: connection max lifetime |
 | `DB_CONN_MAX_IDLE_TIME` | `5m` | Pool: connection max idle time |
 | `JWT_SECRET` | — | JWT signing secret (change in production!) |
-| `JWT_EXPIRY` | `24h` | JWT token lifetime (planned) |
+| `JWT_EXPIRY` | `24h` | JWT token lifetime |
 | `PORT` | `8080` | Server port |
 | `GIN_MODE` | `debug` | `debug` / `release` / `test` |
 
@@ -161,13 +168,68 @@ Defined in `.env` (gitignored). _Didefinisikan di `.env` (diabaikan oleh git)._
 
 ## API Endpoints · _Endpoint API_
 
-| Method | Path | Status | Description |
-|---|---|---|---|
-| `GET` | `/health` | ✅ done | Health check → `{"data":{"status":"ok"}}` |
-| _CRUD_ | _`/api/v1/books`_ | 🔜 planned | Book resource routes (grouped under `/api/v1`) |
-| _Auth_ | _`/api/v1/auth/*`_ | 🔜 planned | Register/login, JWT issuance |
+All routes grouped under `/api/v1` (except `/health`).
 
-Response envelope follows AGENTS.md: success → `{"data": {...}}`, errors → `{"error": "message"}`.
+### Public · _Publik_
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/health` | Health check → `{"data":{"status":"ok"}}` |
+| `GET` | `/api/v1/health` | Health check (v1 alias) |
+| `POST` | `/api/v1/register` | Register → `{"data": user}` (password excluded) |
+| `POST` | `/api/v1/login` | Login → `{"token": "..."}` |
+| `GET` | `/api/v1/books` | List books → `{"data": [...], "meta": {page, limit, total}}` |
+| `GET` | `/api/v1/books/:id` | Get book by ID → `{"data": book}` |
+
+### Protected · _Terlindungi_ (requires `Authorization: Bearer <token>`)
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/api/v1/books` | Create book → 201 `{"data": book}` |
+| `PUT` | `/api/v1/books/:id` | Partial update → `{"data": book}` |
+| `DELETE` | `/api/v1/books/:id` | Delete book → `{"message": "deleted"}` |
+
+### Request / Response examples
+
+```bash
+# Register
+curl -X POST http://localhost:8080/api/v1/register \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Angga","email":"angga@bwa.com","password":"secret123"}'
+# → 201 {"data":{"id":1,"name":"Angga","email":"angga@bwa.com","created_at":"..."}}
+
+# Login (returns JWT)
+curl -X POST http://localhost:8080/api/v1/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"angga@bwa.com","password":"secret123"}'
+# → 200 {"token":"eyJhbGciOiJIUzI1NiIs..."}
+
+# Create book (protected)
+curl -X POST http://localhost:8080/api/v1/books \
+  -H "Authorization: Bearer eyJhbGci..." \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Go Programming","author":"Ahmad","isbn":"978-1234","price":49.99,"stock":50}'
+# → 201 {"data":{"id":1,"title":"Go Programming",...}}
+
+# List with pagination
+curl "http://localhost:8080/api/v1/books?page=1&limit=5"
+# → 200 {"data":[...],"meta":{"page":1,"limit":5,"total":10}}
+
+# Partial update (only price)
+curl -X PUT http://localhost:8080/api/v1/books/1 \
+  -H "Authorization: Bearer eyJhbGci..." \
+  -H "Content-Type: application/json" \
+  -d '{"price":39.99}'
+# → 200 {"data":{...,"price":39.99,"updated_at":"..."}}
+```
+
+### Response format
+
+- Success: `{"data": {...}}` or `{"data": [...], "meta": {...}}`
+- Errors: `{"error": "message"}`
+- Delete: `{"message": "deleted"}`
+- Protected routes without/invalid token: 401 `{"error": "unauthorized"}`
+- Validation failure: 400 `{"error": "invalid input: ..."}`
 
 ---
 
@@ -268,16 +330,20 @@ podman exec bookstore-postgres psql -U bookstore -d bookstore_db
 - PostgreSQL 16 on Podman + `docker-compose.yml` + `.env`
 - `config/` — env loading, GORM connect with retry + pool tuning + Gin logging
 - `models/` — `Book` and `User` (bcrypt)
-- `main.go` — connect, auto-migrate, Gin (logger + recovery), `GET /health`, serve
+- `handlers/` — Book CRUD + Auth (register/login/JWT)
+- `middleware/` — JWT auth middleware (Bearer validation, context)
+- `routes/` — route registration, public + protected groups under `/api/v1`
+- `main.go` — connect, auto-migrate, Gin (logger + recovery), `SetupRoutes`, serve
+- Input validation (Gin binding for register, create, update)
+- Pagination (`?page=1&limit=10`)
 - DB connectivity checker (`cmd/dbcheck`)
 
 **Next · _Berikutnya_**
-- `handlers/` — Gin handlers for Book CRUD + User auth
-- `routes/` — route registration grouped under `/api/v1`
-- `middleware/` — JWT auth middleware (`golang-jwt/v5`)
-- Input validation (Gin binding)
-- Pagination per AGENTS.md (`?page=1&limit=10`)
-- Tests
+- Tests (unit + integration)
+- User profile / update / delete endpoints
+- Role-based access control (admin vs user)
+- Rate limiting, request logging middleware
+- Swagger/OpenAPI docs
 
 ---
 
@@ -287,4 +353,4 @@ podman exec bookstore-postgres psql -U bookstore -d bookstore_db
 - Gin startup warnings (`debug` mode, "trusted all proxies") are expected for dev — set `GIN_MODE=release` and configure trusted proxies for production.
 - This project follows the conventions in [`AGENTS.md`](./AGENTS.md).
 
-Built end-to-end in a single session — from an empty directory to a running, migrating, health-checked API. _Dibangun lengkap dalam satu sesi — dari direktori kosong menjadi API yang berjalan, migrasi, dan health-checked._
+Built end-to-end in a single session — from an empty directory to a full CRUD + auth API with JWT protection. _Dibangun lengkap dalam satu sesi — dari direktori kosong menjadi API CRUD + autentikasi penuh dengan perlindungan JWT._

@@ -7,7 +7,7 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
-	"github.com/yourusername/bookstore-api/models"
+	"github.com/yuriowindiatmoko-plai-robotic/bookstore-api/models"
 	"gorm.io/gorm"
 )
 
