@@ -3,3 +3,6 @@ vendor/
 bookstore-api
 *.exe
 *.test
+
+# Local session notes (not project docs)
+session-summary.md
